@@ -1,0 +1,17 @@
+# GreenPoint Mumbai Technical Guidelines
+
+## Tech Stack
+- [cite_start]Frontend: React (Mobile-responsive for 73% mobile preference)[cite: 354].
+- Backend: FastAPI (Python).
+- Database: SQLite or local JSON (for 18-hour prototype speed).
+- Styling: Tailwind CSS.
+
+## UI/UX Constraints
+- **Primary Colors:** BMC Blue (#1E3A8A) and Green (#10B981).
+- **Dashboard citizen view:** Large wallet balance, recent activity feed.
+- [cite_start]**Collector view:** Large "Flag Violation" button with a dropdown: [Non-segregation, Littering, Waste Burning][cite: 258, 293].
+
+## Logic Rules
+- Point deductions must be applied immediately to the user's wallet.
+- [cite_start]Display "Appeal Violation" button on citizen view (48-hour window logic)[cite: 261, 296].
+- [cite_start]All backend responses for violations must return warning messages in English, Hindi, and Marathi[cite: 260].
