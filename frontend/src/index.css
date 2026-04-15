@@ -5,6 +5,7 @@
   color: #0f172a;
   background:
     radial-gradient(circle at top, rgba(30, 58, 138, 0.16), transparent 34%),
+    radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.16), transparent 28%),
     linear-gradient(180deg, #eff6ff 0%, #f8fafc 30%, #f8fafc 100%);
   color-scheme: light;
 }
@@ -27,4 +28,72 @@ button,
 input,
 select {
   font: inherit;
+}
+
+.glass-card {
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.58));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 20px 50px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(20px);
+}
+
+.wallet-celebrate {
+  animation: walletPulse 1.2s ease-out;
+}
+
+.confetti-piece {
+  position: absolute;
+  width: 10px;
+  height: 18px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #10b981, #1e3a8a);
+  opacity: 0;
+  animation: confettiDrop 1.2s ease-out forwards;
+}
+
+.confetti-piece.delay-1 {
+  animation-delay: 0.08s;
+}
+
+.confetti-piece.delay-2 {
+  animation-delay: 0.14s;
+}
+
+.confetti-piece.delay-3 {
+  animation-delay: 0.22s;
+}
+
+.confetti-piece.delay-4 {
+  animation-delay: 0.3s;
+}
+
+@keyframes walletPulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.22);
+  }
+  30% {
+    transform: scale(1.04);
+    box-shadow: 0 26px 70px rgba(16, 185, 129, 0.28);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.22);
+  }
+}
+
+@keyframes confettiDrop {
+  0% {
+    opacity: 0;
+    transform: translateY(-12px) rotate(0deg);
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(140px) rotate(230deg);
+  }
 }

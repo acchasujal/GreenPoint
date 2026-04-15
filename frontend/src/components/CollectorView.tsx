@@ -1,4 +1,4 @@
-import { MapPin, ShieldAlert, UserRound } from "lucide-react";
+import { type LucideIcon, MapPin, ShieldAlert, UserRound } from "lucide-react";
 import type { LedgerEvent, User } from "../types";
 import { VIOLATION_TYPES, type ViolationType } from "./constants";
 import { extractLocation, formatDate } from "./utils";
@@ -19,6 +19,26 @@ type CollectorViewProps = {
   defaultUser: string;
 };
 
+function OfficialBadge({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-[24px] border border-blue-200/80 bg-gradient-to-br from-blue-50/90 to-white/80 px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_12px_30px_rgba(30,58,138,0.08)] backdrop-blur-xl">
+      <p className="mb-1 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#1E3A8A]">
+        <Icon className="h-4 w-4" />
+        {label}
+      </p>
+      <p className="text-base font-black text-slate-900">{value}</p>
+    </div>
+  );
+}
+
 export function CollectorView({
   users,
   selectedUserId,
@@ -34,9 +54,12 @@ export function CollectorView({
   onFlagViolation,
   defaultUser,
 }: CollectorViewProps) {
+  void onCollectorIdChange;
+  void onGeoTagChange;
+
   return (
     <section className="space-y-5">
-      <article className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_50px_rgba(15,23,42,0.08)]">
+      <article className="glass-card rounded-[28px] p-6">
         <div className="flex flex-col gap-2">
           <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#1E3A8A]">
             Collector Workflow
@@ -49,7 +72,7 @@ export function CollectorView({
         </div>
 
         <div className="mt-5 grid gap-4 md:grid-cols-2">
-          <label className="text-sm">
+          <label className="text-sm md:col-span-2">
             <span className="mb-1.5 flex items-center gap-2 font-semibold text-slate-600">
               <UserRound className="h-4 w-4" />
               Citizen
@@ -57,7 +80,7 @@ export function CollectorView({
             <select
               value={selectedUserId}
               onChange={(e) => onUserChange(e.target.value)}
-              className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 outline-none transition focus:border-[#1E3A8A] focus:bg-white"
+              className="w-full rounded-2xl border border-white/80 bg-white/75 px-4 py-3 outline-none backdrop-blur-sm transition focus:border-[#1E3A8A] focus:bg-white"
             >
               {users.length === 0 && <option value={defaultUser}>{defaultUser}</option>}
               {users.map((item) => (
@@ -68,37 +91,12 @@ export function CollectorView({
             </select>
           </label>
 
-          <label className="text-sm">
-            <span className="mb-1.5 flex items-center gap-2 font-semibold text-slate-600">
-              <ShieldAlert className="h-4 w-4" />
-              Collector ID
-            </span>
-            <input
-              value={collectorId}
-              onChange={(e) => onCollectorIdChange(e.target.value)}
-              className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 outline-none transition focus:border-[#1E3A8A] focus:bg-white"
-            />
-          </label>
-
-          <label className="text-sm md:col-span-2">
-            <span className="mb-1.5 flex items-center gap-2 font-semibold text-slate-600">
-              <MapPin className="h-4 w-4" />
-              Geo-tagged Location
-            </span>
-            <select
-              value={geoTag}
-              onChange={(e) => onGeoTagChange(e.target.value)}
-              className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 outline-none transition focus:border-[#1E3A8A] focus:bg-white"
-            >
-              <option value="Chembur">Chembur</option>
-              <option value="Vidyavihar">Vidyavihar</option>
-              <option value="BMC Ward G-South">BMC Ward G-South</option>
-            </select>
-          </label>
+          <OfficialBadge icon={ShieldAlert} label="Collector ID" value={collectorId} />
+          <OfficialBadge icon={MapPin} label="Geo-tagged Location" value={geoTag} />
         </div>
       </article>
 
-      <article className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_18px_50px_rgba(15,23,42,0.08)]">
+      <article className="glass-card rounded-[28px] p-6">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-bold text-[#1E3A8A]">Violation Actions</h3>
@@ -136,13 +134,16 @@ export function CollectorView({
         </button>
       </article>
 
-      <footer className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)]">
+      <footer className="glass-card rounded-[28px] p-5">
         <h4 className="mb-3 text-sm font-bold uppercase tracking-[0.18em] text-[#1E3A8A]">
           Audit Log
         </h4>
         <div className="space-y-3 text-sm">
           {ledger.slice(0, 5).map((event) => (
-            <div key={event.id} className="rounded-2xl bg-slate-50 px-4 py-3 text-slate-700">
+            <div
+              key={event.id}
+              className="rounded-2xl border border-white/70 bg-white/65 px-4 py-3 text-slate-700 backdrop-blur-sm"
+            >
               <p className="font-semibold text-slate-900">
                 {event.user_id} | {event.violation_type || "Reward event"}
               </p>
@@ -153,7 +154,7 @@ export function CollectorView({
             </div>
           ))}
           {ledger.length === 0 && (
-            <p className="rounded-2xl bg-slate-50 px-4 py-5 text-sm text-slate-500">
+            <p className="rounded-2xl bg-white/60 px-4 py-5 text-sm text-slate-500 backdrop-blur-sm">
               No audit activity recorded yet.
             </p>
           )}

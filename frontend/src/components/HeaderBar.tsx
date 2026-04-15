@@ -1,4 +1,4 @@
-import { Landmark, ShieldCheck } from "lucide-react";
+import { Landmark } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { LABELS, type LanguageKey } from "./constants";
 
@@ -27,12 +27,14 @@ export function HeaderBar({ language, onLanguageChange }: HeaderBarProps) {
         </div>
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <nav className="flex items-center rounded-full border border-white/20 bg-white/10 p-1 backdrop-blur">
+          <nav className="inline-flex items-center rounded-full border border-white/20 bg-white/12 p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] backdrop-blur-xl">
             <NavLink
               to="/citizen"
               className={({ isActive }) =>
-                `rounded-full px-4 py-2 text-sm font-semibold transition ${
-                  isActive ? "bg-white text-[#1E3A8A]" : "text-white hover:bg-white/10"
+                `rounded-full px-5 py-2 text-sm font-semibold transition ${
+                  isActive
+                    ? "bg-white text-[#1E3A8A] shadow-[0_10px_24px_rgba(15,23,42,0.16)]"
+                    : "text-white hover:bg-white/10"
                 }`
               }
             >
@@ -41,8 +43,10 @@ export function HeaderBar({ language, onLanguageChange }: HeaderBarProps) {
             <NavLink
               to="/collector"
               className={({ isActive }) =>
-                `rounded-full px-4 py-2 text-sm font-semibold transition ${
-                  isActive ? "bg-white text-[#1E3A8A]" : "text-white hover:bg-white/10"
+                `rounded-full px-5 py-2 text-sm font-semibold transition ${
+                  isActive
+                    ? "bg-white text-[#1E3A8A] shadow-[0_10px_24px_rgba(15,23,42,0.16)]"
+                    : "text-white hover:bg-white/10"
                 }`
               }
             >
@@ -50,24 +54,18 @@ export function HeaderBar({ language, onLanguageChange }: HeaderBarProps) {
             </NavLink>
           </nav>
 
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-2 rounded-full bg-emerald-400/15 px-3 py-2 text-xs font-semibold text-emerald-50">
-              <ShieldCheck className="h-4 w-4" />
-              Live BMC prototype
-            </span>
-            <div className="rounded-full bg-white/12 p-1">
-              {(Object.keys(LABELS) as LanguageKey[]).map((lang) => (
-                <button
-                  key={lang}
-                  onClick={() => onLanguageChange(lang)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
-                    language === lang ? "bg-white text-[#1E3A8A]" : "text-white hover:bg-white/10"
-                  }`}
-                >
-                  {lang}
-                </button>
-              ))}
-            </div>
+          <div className="rounded-full bg-white/12 p-1">
+            {(Object.keys(LABELS) as LanguageKey[]).map((lang) => (
+              <button
+                key={lang}
+                onClick={() => onLanguageChange(lang)}
+                className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                  language === lang ? "bg-white text-[#1E3A8A]" : "text-white hover:bg-white/10"
+                }`}
+              >
+                {lang}
+              </button>
+            ))}
           </div>
         </div>
       </div>

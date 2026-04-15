@@ -20,10 +20,39 @@ WARNING_MESSAGES = {
     "mr": "सूचना: कचरा वर्गीकरण आढळले नाही. 20 गुण वजा केले आहेत.",
 }
 
-app = FastAPI(title="GreenPoint Mumbai Prototype API", version="1.0.0")
+WARD_STANDINGS = {
+    "Chembur": 4250,
+    "Vidyavihar": 3890,
+}
+
+SOCIETY_RANKS = {
+    "Green Heights": {"rank": 2, "total_societies": 11},
+    "Vidyavihar Residency": {"rank": 4, "total_societies": 9},
+}
+
+DEFAULT_USER_PROFILES = {
+    "citizen-1001": {"ward": "Chembur", "society_name": "Green Heights"},
+    "citizen-1002": {"ward": "Vidyavihar", "society_name": "Vidyavihar Residency"},
+}
+
+QUIZ_QUESTION = {
+    "question_id": "waste-wizard-001",
+    "question": "Where do expired medicine strips go?",
+    "options": ["Green/Wet", "Blue/Dry", "Red/Hazardous"],
+    "correct_answer": "Red/Hazardous",
+}
+
+app = FastAPI(title="GreenPoint Mumbai Prototype API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,12 +63,17 @@ class UserOut(BaseModel):
     id: str
     points: int
     violation_count: int
+    xp_points: int
+    landfill_saved_kg: float
+    last_quiz_date: str | None = None
+    ward: str
+    society_name: str
 
 
 class RewardRequest(BaseModel):
     user_id: str
     collector_id: str = "system-qr"
-    geo_tag: str = "mumbai-ward-unknown"
+    geo_tag: str = "Chembur"
 
 
 class ViolationRequest(BaseModel):
@@ -49,7 +83,7 @@ class ViolationRequest(BaseModel):
         default="Non-segregation",
         description="Non-segregation, Littering, Waste Burning",
     )
-    geo_tag: str = "mumbai-ward-unknown"
+    geo_tag: str = "Chembur"
 
 
 class NotificationOut(BaseModel):
@@ -69,6 +103,11 @@ class NotificationAckRequest(BaseModel):
     acknowledged_by: str = "citizen"
 
 
+class QuizAnswerRequest(BaseModel):
+    user_id: str
+    answer: str
+
+
 @contextmanager
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -80,8 +119,24 @@ def get_db() -> sqlite3.Connection:
         conn.close()
 
 
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 def utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return utc_now().isoformat()
+
+
+def today_iso_date() -> str:
+    return utc_now().date().isoformat()
+
+
+def audit_response(data: Any, transaction_id: str | None = None) -> dict[str, Any]:
+    return {
+        "transaction_id": transaction_id or str(uuid4()),
+        "timestamp": utc_now_iso(),
+        "data": data,
+    }
 
 
 def init_db() -> None:
@@ -91,7 +146,12 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
                 points INTEGER NOT NULL DEFAULT 0,
-                violation_count INTEGER NOT NULL DEFAULT 0
+                violation_count INTEGER NOT NULL DEFAULT 0,
+                xp_points INTEGER NOT NULL DEFAULT 0,
+                landfill_saved_kg REAL NOT NULL DEFAULT 0,
+                last_quiz_date TEXT,
+                ward TEXT NOT NULL DEFAULT 'Chembur',
+                society_name TEXT NOT NULL DEFAULT 'Green Heights'
             )
             """
         )
@@ -129,6 +189,25 @@ def init_db() -> None:
             )
             """
         )
+
+        existing_user_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "xp_points" not in existing_user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN xp_points INTEGER NOT NULL DEFAULT 0")
+        if "landfill_saved_kg" not in existing_user_columns:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN landfill_saved_kg REAL NOT NULL DEFAULT 0"
+            )
+        if "last_quiz_date" not in existing_user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN last_quiz_date TEXT")
+        if "ward" not in existing_user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN ward TEXT NOT NULL DEFAULT 'Chembur'")
+        if "society_name" not in existing_user_columns:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN society_name TEXT NOT NULL DEFAULT 'Green Heights'"
+            )
+
         existing_notification_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(notifications)").fetchall()
         }
@@ -138,13 +217,37 @@ def init_db() -> None:
             conn.execute("ALTER TABLE notifications ADD COLUMN acknowledged_by TEXT")
 
 
+def default_profile_for_user(user_id: str) -> dict[str, str]:
+    if user_id in DEFAULT_USER_PROFILES:
+        return DEFAULT_USER_PROFILES[user_id]
+    if user_id.endswith("2"):
+        return {"ward": "Vidyavihar", "society_name": "Vidyavihar Residency"}
+    return {"ward": "Chembur", "society_name": "Green Heights"}
+
+
+def refresh_user_metrics(conn: sqlite3.Connection, user_id: str) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    landfill_saved_kg = round(row["points"] * 0.5, 2)
+    conn.execute(
+        "UPDATE users SET landfill_saved_kg = ? WHERE id = ?",
+        (landfill_saved_kg, user_id),
+    )
+    return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
 def ensure_user(conn: sqlite3.Connection, user_id: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if row:
-        return row
+        return refresh_user_metrics(conn, user_id)
+
+    profile = default_profile_for_user(user_id)
     conn.execute(
-        "INSERT INTO users (id, points, violation_count) VALUES (?, 0, 0)",
-        (user_id,),
+        """
+        INSERT INTO users (
+            id, points, violation_count, xp_points, landfill_saved_kg, last_quiz_date, ward, society_name
+        ) VALUES (?, 0, 0, 0, 0, NULL, ?, ?)
+        """,
+        (user_id, profile["ward"], profile["society_name"]),
     )
     return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
 
@@ -154,7 +257,43 @@ def user_to_out(row: sqlite3.Row) -> UserOut:
         id=row["id"],
         points=row["points"],
         violation_count=row["violation_count"],
+        xp_points=row["xp_points"],
+        landfill_saved_kg=round(row["landfill_saved_kg"], 2),
+        last_quiz_date=row["last_quiz_date"],
+        ward=row["ward"],
+        society_name=row["society_name"],
     )
+
+
+def build_society_rank(user: sqlite3.Row) -> dict[str, Any]:
+    ranking = SOCIETY_RANKS.get(
+        user["society_name"], {"rank": 3, "total_societies": 10}
+    )
+    return {
+        "society_name": user["society_name"],
+        "rank": ranking["rank"],
+        "total_societies": ranking["total_societies"],
+        "ward": user["ward"],
+    }
+
+
+def build_leaderboard() -> list[dict[str, Any]]:
+    standings = []
+    for idx, (ward, points) in enumerate(
+        sorted(WARD_STANDINGS.items(), key=lambda item: item[1], reverse=True), start=1
+    ):
+        standings.append({"ward": ward, "points": points, "rank": idx})
+    return standings
+
+
+def build_ledger_entry(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        **dict(row),
+        "transaction_id": row["id"],
+        "timestamp": row["created_at"],
+        "status": "Verified",
+        "location": row["geo_tag"],
+    }
 
 
 # Ensure local sqlite tables exist even when startup event is bypassed in tests.
@@ -168,32 +307,37 @@ def startup() -> None:
 
 @app.get("/")
 def root() -> dict[str, Any]:
-    return {
-        "name": "GreenPoint Mumbai Prototype API",
-        "status": "ok",
-        "active_routes": [
-            "/health",
-            "/user/{user_id}",
-            "/users",
-            "/reward",
-            "/violation",
-            "/notifications/{user_id}",
-            "/notifications/{notification_id}/acknowledge",
-            "/ledger/{user_id}",
-        ],
-    }
+    return audit_response(
+        {
+            "name": "GreenPoint Mumbai Prototype API",
+            "status": "ok",
+            "active_routes": [
+                "/health",
+                "/user/{user_id}",
+                "/users",
+                "/reward",
+                "/violation",
+                "/notifications/{user_id}",
+                "/notifications/{notification_id}/acknowledge",
+                "/ledger/{user_id}",
+                "/leaderboard/{user_id}",
+                "/quiz/{user_id}",
+                "/quiz/answer",
+            ],
+        }
+    )
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    return audit_response({"status": "ok"})
 
 
-@app.get("/user/{user_id}", response_model=UserOut)
-def get_user(user_id: str) -> UserOut:
+@app.get("/user/{user_id}")
+def get_user(user_id: str) -> dict[str, Any]:
     with get_db() as conn:
         row = ensure_user(conn, user_id)
-        return user_to_out(row)
+        return audit_response(user_to_out(row).model_dump(), transaction_id=f"user-{user_id}")
 
 
 @app.post("/reward")
@@ -203,9 +347,10 @@ def reward(req: RewardRequest) -> dict[str, Any]:
     with get_db() as conn:
         user = ensure_user(conn, req.user_id)
         new_points = user["points"] + 10
+        new_xp = user["xp_points"] + 10
         conn.execute(
-            "UPDATE users SET points = ? WHERE id = ?",
-            (new_points, req.user_id),
+            "UPDATE users SET points = ?, xp_points = ? WHERE id = ?",
+            (new_points, new_xp, req.user_id),
         )
         conn.execute(
             """
@@ -223,24 +368,22 @@ def reward(req: RewardRequest) -> dict[str, Any]:
                 created_at,
             ),
         )
-        updated = conn.execute(
-            "SELECT * FROM users WHERE id = ?",
-            (req.user_id,),
-        ).fetchone()
-        return {
-            "event_id": event_id,
-            "timestamp": created_at,
-            "user": user_to_out(updated).model_dump(),
-            "points_added": 10,
-        }
+        updated = refresh_user_metrics(conn, req.user_id)
+        return audit_response(
+            {
+                "user": user_to_out(updated).model_dump(),
+                "points_added": 10,
+                "xp_points_added": 10,
+            },
+            transaction_id=event_id,
+        )
 
 
 @app.post("/violation")
 def violation(req: ViolationRequest) -> dict[str, Any]:
     event_id = str(uuid4())
     created_at = utc_now_iso()
-    now = datetime.now(UTC)
-    window_start = (now - timedelta(days=30)).isoformat()
+    window_start = (utc_now() - timedelta(days=30)).isoformat()
 
     with get_db() as conn:
         user = ensure_user(conn, req.user_id)
@@ -273,7 +416,6 @@ def violation(req: ViolationRequest) -> dict[str, Any]:
             points_delta = -50
             message = "Tier 2 offense: 50 points deducted and society notification issued."
         else:
-            points_delta = 0
             monetary_fine_inr = 200
             message = "Tier 3 offense: INR 200 BMC monetary fine issued."
 
@@ -324,29 +466,27 @@ def violation(req: ViolationRequest) -> dict[str, Any]:
             ),
         )
 
-        updated = conn.execute(
-            "SELECT * FROM users WHERE id = ?",
-            (req.user_id,),
-        ).fetchone()
+        updated = refresh_user_metrics(conn, req.user_id)
 
-        return {
-            "event_id": event_id,
-            "notification_id": notif_id,
-            "timestamp": created_at,
-            "offense_tier": tier,
-            "points_deducted": abs(points_delta),
-            "monetary_fine_inr": monetary_fine_inr,
-            "warning_messages": {
-                "english": english,
-                "hindi": hindi,
-                "marathi": marathi,
+        return audit_response(
+            {
+                "notification_id": notif_id,
+                "offense_tier": tier,
+                "points_deducted": abs(points_delta),
+                "monetary_fine_inr": monetary_fine_inr,
+                "warning_messages": {
+                    "english": english,
+                    "hindi": hindi,
+                    "marathi": marathi,
+                },
+                "user": user_to_out(updated).model_dump(),
             },
-            "user": user_to_out(updated).model_dump(),
-        }
+            transaction_id=event_id,
+        )
 
 
-@app.get("/notifications/{user_id}", response_model=list[NotificationOut])
-def notifications(user_id: str) -> list[NotificationOut]:
+@app.get("/notifications/{user_id}")
+def notifications(user_id: str) -> dict[str, Any]:
     with get_db() as conn:
         ensure_user(conn, user_id)
         rows = conn.execute(
@@ -358,13 +498,14 @@ def notifications(user_id: str) -> list[NotificationOut]:
             """,
             (user_id,),
         ).fetchall()
-        return [NotificationOut(**dict(row)) for row in rows]
+        data = [NotificationOut(**dict(row)).model_dump() for row in rows]
+        return audit_response(data, transaction_id=f"notifications-{user_id}")
 
 
 @app.post("/notifications/{notification_id}/acknowledge")
 def acknowledge_notification(
     notification_id: str, req: NotificationAckRequest
-) -> dict[str, str]:
+) -> dict[str, Any]:
     acknowledged_at = utc_now_iso()
     with get_db() as conn:
         row = conn.execute(
@@ -372,7 +513,7 @@ def acknowledge_notification(
             (notification_id,),
         ).fetchone()
         if not row:
-            return {"status": "not_found"}
+            return audit_response({"status": "not_found"}, transaction_id=notification_id)
 
         conn.execute(
             """
@@ -383,6 +524,7 @@ def acknowledge_notification(
             (acknowledged_at, req.acknowledged_by, notification_id),
         )
 
+        ledger_id = str(uuid4())
         conn.execute(
             """
             INSERT INTO ledger
@@ -391,7 +533,7 @@ def acknowledge_notification(
             VALUES (?, ?, 'notification_ack', 0, NULL, NULL, ?, ?, ?, ?)
             """,
             (
-                str(uuid4()),
+                ledger_id,
                 row["user_id"],
                 req.acknowledged_by,
                 "citizen-app",
@@ -400,11 +542,14 @@ def acknowledge_notification(
             ),
         )
 
-    return {"status": "acknowledged", "acknowledged_at": acknowledged_at}
+    return audit_response(
+        {"status": "acknowledged", "acknowledged_at": acknowledged_at},
+        transaction_id=notification_id,
+    )
 
 
 @app.get("/ledger/{user_id}")
-def ledger(user_id: str) -> list[dict[str, Any]]:
+def ledger(user_id: str) -> dict[str, Any]:
     with get_db() as conn:
         ensure_user(conn, user_id)
         rows = conn.execute(
@@ -416,11 +561,119 @@ def ledger(user_id: str) -> list[dict[str, Any]]:
             """,
             (user_id,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return audit_response(
+            [build_ledger_entry(row) for row in rows],
+            transaction_id=f"ledger-{user_id}",
+        )
 
 
 @app.get("/users")
-def users() -> list[UserOut]:
+def users() -> dict[str, Any]:
     with get_db() as conn:
+        for user_id in DEFAULT_USER_PROFILES:
+            ensure_user(conn, user_id)
         rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
-        return [user_to_out(row) for row in rows]
+        data = [user_to_out(refresh_user_metrics(conn, row["id"])).model_dump() for row in rows]
+        return audit_response(data, transaction_id="users-all")
+
+
+@app.get("/leaderboard/{user_id}")
+def leaderboard(user_id: str) -> dict[str, Any]:
+    with get_db() as conn:
+        user = ensure_user(conn, user_id)
+        return audit_response(
+            {
+                "standings": build_leaderboard(),
+                "my_society": build_society_rank(user),
+            },
+            transaction_id=f"leaderboard-{user_id}",
+        )
+
+
+@app.get("/quiz/{user_id}")
+def get_quiz(user_id: str) -> dict[str, Any]:
+    with get_db() as conn:
+        user = ensure_user(conn, user_id)
+        is_available = user["last_quiz_date"] != today_iso_date()
+        return audit_response(
+            {
+                "available": is_available,
+                "question": QUIZ_QUESTION["question"] if is_available else None,
+                "question_id": QUIZ_QUESTION["question_id"] if is_available else None,
+                "options": QUIZ_QUESTION["options"] if is_available else [],
+                "reward_points": 5,
+            },
+            transaction_id=f"quiz-{user_id}",
+        )
+
+
+@app.post("/quiz/answer")
+def submit_quiz_answer(req: QuizAnswerRequest) -> dict[str, Any]:
+    event_id = str(uuid4())
+    with get_db() as conn:
+        user = ensure_user(conn, req.user_id)
+        already_played = user["last_quiz_date"] == today_iso_date()
+        is_correct = req.answer == QUIZ_QUESTION["correct_answer"]
+
+        if already_played:
+            updated = refresh_user_metrics(conn, req.user_id)
+            return audit_response(
+                {
+                    "correct": False,
+                    "already_attempted_today": True,
+                    "points_added": 0,
+                    "user": user_to_out(updated).model_dump(),
+                },
+                transaction_id=event_id,
+            )
+
+        points_added = 5 if is_correct else 0
+        xp_added = 5 if is_correct else 0
+        details = (
+            "Waste Wizard reward for correct hazardous disposal answer"
+            if is_correct
+            else "Waste Wizard attempted with incorrect answer"
+        )
+
+        conn.execute(
+            """
+            UPDATE users
+            SET points = ?, xp_points = ?, last_quiz_date = ?
+            WHERE id = ?
+            """,
+            (
+                user["points"] + points_added,
+                user["xp_points"] + xp_added,
+                today_iso_date(),
+                req.user_id,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO ledger
+                (id, user_id, event_type, points_delta, offense_tier, violation_type,
+                 collector_id, geo_tag, details, created_at)
+            VALUES (?, ?, 'quiz_reward', ?, NULL, NULL, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                req.user_id,
+                points_added,
+                "waste-wizard",
+                user["ward"],
+                details,
+                utc_now_iso(),
+            ),
+        )
+        updated = refresh_user_metrics(conn, req.user_id)
+        return audit_response(
+            {
+                "correct": is_correct,
+                "already_attempted_today": False,
+                "points_added": points_added,
+                "xp_points_added": xp_added,
+                "correct_answer": QUIZ_QUESTION["correct_answer"],
+                "user": user_to_out(updated).model_dump(),
+            },
+            transaction_id=event_id,
+        )
