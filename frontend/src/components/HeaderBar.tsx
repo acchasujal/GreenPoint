@@ -1,6 +1,8 @@
-import { Landmark } from "lucide-react";
+import { Landmark, LogOut } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { LABELS, type LanguageKey } from "./constants";
+import { useAuth } from "../AuthContext";
+import { useToast } from "./Toast";
 
 type HeaderBarProps = {
   language: LanguageKey;
@@ -8,6 +10,32 @@ type HeaderBarProps = {
 };
 
 export function HeaderBar({ language, onLanguageChange }: HeaderBarProps) {
+  const { currentUser, logout } = useAuth();
+  const { showToast } = useToast();
+
+  const handleLogout = () => {
+    const email = currentUser?.email || "User";
+    console.log(
+      `[AUTH] Logout initiated for ${email} (${currentUser?.role}). Clearing session...`
+    );
+
+    // Clear localStorage explicitly
+    localStorage.removeItem("current_user");
+    console.log("[AUTH] Cleared localStorage: current_user");
+
+    // Call logout to update context
+    logout();
+    console.log("[AUTH] Auth context updated. Redirecting to /login");
+
+    // Show success toast
+    showToast(`Logged out successfully. See you soon!`, "success", 2000);
+
+    // Hard redirect to login page using replace to prevent back-button issues
+    setTimeout(() => {
+      window.location.href = "/login";
+    }, 100);
+  };
+
   return (
     <header className="border-b border-blue-900/30 bg-[#1E3A8A] text-white shadow-xl">
       <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
@@ -67,8 +95,25 @@ export function HeaderBar({ language, onLanguageChange }: HeaderBarProps) {
               </button>
             ))}
           </div>
+
+          {/* User Info and Logout */}
+          <div className="flex items-center gap-3 pl-3 border-l border-white/20">
+            <div className="text-right hidden sm:block">
+              <p className="text-sm font-medium">{currentUser?.email}</p>
+              <p className="text-xs text-blue-100 capitalize">{currentUser?.role}</p>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="inline-flex items-center gap-2 rounded-full bg-red-500/20 hover:bg-red-500/30 text-white px-4 py-2 text-sm font-semibold transition border border-red-400/30"
+              title="Logout"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
+          </div>
         </div>
       </div>
     </header>
   );
 }
+

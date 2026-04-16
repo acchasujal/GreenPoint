@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from enum import Enum
 
-from fastapi import FastAPI
+import bcrypt
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -41,6 +43,14 @@ QUIZ_QUESTION = {
     "options": ["Green/Wet", "Blue/Dry", "Red/Hazardous"],
     "correct_answer": "Red/Hazardous",
 }
+
+COLLECTOR_ACCESS_CODE = "BMC2026"
+
+
+class UserRole(str, Enum):
+    CITIZEN = "citizen"
+    COLLECTOR = "collector"
+
 
 app = FastAPI(title="GreenPoint Mumbai Prototype API", version="2.0.0")
 app.add_middleware(
@@ -108,6 +118,44 @@ class QuizAnswerRequest(BaseModel):
     answer: str
 
 
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    role: UserRole = UserRole.CITIZEN
+    access_code: str | None = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    user_id: str
+    email: str
+    role: str
+    session_token: str
+
+
+class UserProfileResponse(BaseModel):
+    user_id: str
+    points: int
+    violation_count: int
+    xp_points: int
+    landfill_saved_kg: float
+    ward: str
+    society_name: str
+    violation_history: list[dict[str, Any]]
+    pending_notifications: list[dict[str, Any]]
+
+
+class UserSearchResult(BaseModel):
+    user_id: str
+    email: str | None = None  # Don't expose to collector
+    violation_count: int
+    last_violation_date: str | None = None
+
+
 @contextmanager
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -139,6 +187,51 @@ def audit_response(data: Any, transaction_id: str | None = None) -> dict[str, An
     }
 
 
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt."""
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a password against its hash."""
+    return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+
+
+def generate_session_token(user_id: str, role: str) -> str:
+    """Generate a simple session token (simulated JWT for demo purposes)."""
+    import base64
+    token_data = f"{user_id}:{role}:{utc_now_iso()}"
+    return base64.b64encode(token_data.encode()).decode()
+
+
+def extract_user_from_token(authorization: str | None = Header(None)) -> tuple[str, str]:
+    """
+    Extract user_id and role from Authorization header.
+    Expected format: "Bearer {session_token}"
+    Returns: (user_id, role)
+    Raises: HTTPException if token is invalid
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization header")
+
+    try:
+        scheme, token = authorization.split(" ")
+        if scheme.lower() != "bearer":
+            raise ValueError("Invalid scheme")
+
+        import base64
+        decoded = base64.b64decode(token).decode()
+        parts = decoded.split(":")
+        if len(parts) < 2:
+            raise ValueError("Invalid token format")
+
+        user_id, role = parts[0], parts[1]
+        return user_id, role
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid authorization token: {str(e)}")
+
+
 def init_db() -> None:
     with get_db() as conn:
         conn.execute(
@@ -152,6 +245,17 @@ def init_db() -> None:
                 last_quiz_date TEXT,
                 ward TEXT NOT NULL DEFAULT 'Chembur',
                 society_name TEXT NOT NULL DEFAULT 'Green Heights'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'citizen',
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -313,6 +417,8 @@ def root() -> dict[str, Any]:
             "status": "ok",
             "active_routes": [
                 "/health",
+                "/signup",
+                "/login",
                 "/user/{user_id}",
                 "/users",
                 "/reward",
@@ -333,11 +439,154 @@ def health() -> dict[str, Any]:
     return audit_response({"status": "ok"})
 
 
+@app.post("/signup")
+def signup(req: SignupRequest) -> dict[str, Any]:
+    """Create a new user account."""
+    try:
+        # Validate collector access code if signing up as collector
+        if req.role == UserRole.COLLECTOR:
+            if not req.access_code or req.access_code != COLLECTOR_ACCESS_CODE:
+                raise HTTPException(status_code=400, detail="Invalid Collector Access Code")
+
+        with get_db() as conn:
+            # Check if email already exists
+            existing = conn.execute(
+                "SELECT id FROM auth_users WHERE email = ?",
+                (req.email,),
+            ).fetchone()
+            if existing:
+                raise HTTPException(status_code=400, detail="Email already registered")
+
+            # Create auth user
+            user_id = str(uuid4())
+            password_hash = hash_password(req.password)
+            created_at = utc_now_iso()
+
+            conn.execute(
+                """
+                INSERT INTO auth_users (id, email, password_hash, role, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, req.email, password_hash, req.role.value, created_at),
+            )
+
+            # Create associated user profile
+            profile = {"ward": "Chembur", "society_name": "Green Heights"}
+            conn.execute(
+                """
+                INSERT INTO users (id, points, violation_count, xp_points, landfill_saved_kg, ward, society_name)
+                VALUES (?, 0, 0, 0, 0, ?, ?)
+                """,
+                (user_id, profile["ward"], profile["society_name"]),
+            )
+
+            return audit_response(
+                {
+                    "message": "Signup successful",
+                    "user_id": user_id,
+                    "email": req.email,
+                    "role": req.role.value,
+                },
+                transaction_id=user_id,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/login")
+def login(req: LoginRequest) -> dict[str, Any]:
+    """Authenticate user and return session token."""
+    try:
+        with get_db() as conn:
+            auth_user = conn.execute(
+                "SELECT * FROM auth_users WHERE email = ?",
+                (req.email,),
+            ).fetchone()
+
+            if not auth_user or not verify_password(req.password, auth_user["password_hash"]):
+                raise HTTPException(status_code=401, detail="Invalid email or password")
+
+            session_token = generate_session_token(auth_user["id"], auth_user["role"])
+
+            return audit_response(
+                {
+                    "user_id": auth_user["id"],
+                    "email": auth_user["email"],
+                    "role": auth_user["role"],
+                    "session_token": session_token,
+                },
+                transaction_id=auth_user["id"],
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/user/{user_id}")
 def get_user(user_id: str) -> dict[str, Any]:
     with get_db() as conn:
         row = ensure_user(conn, user_id)
         return audit_response(user_to_out(row).model_dump(), transaction_id=f"user-{user_id}")
+
+
+@app.get("/user/profile/private")
+def get_user_profile_private(
+    auth_header: str = Header(None, alias="Authorization"),
+) -> dict[str, Any]:
+    """
+    PRIVATE ENDPOINT: Returns only the current authenticated user's data.
+    Prevents data leakage by enforcing authentication and checking user_id.
+    """
+    user_id, role = extract_user_from_token(auth_header)
+
+    with get_db() as conn:
+        # Get user data
+        user_row = ensure_user(conn, user_id)
+
+        # Get violation history (last 30 days)
+        window_start = (utc_now() - timedelta(days=30)).isoformat()
+        violation_rows = conn.execute(
+            """
+            SELECT id, offense_tier, violation_type, points_delta, geo_tag, details, created_at
+            FROM ledger
+            WHERE user_id = ? AND event_type = 'violation' AND created_at >= ?
+            ORDER BY created_at DESC
+            """,
+            (user_id, window_start),
+        ).fetchall()
+        violation_history = [dict(row) for row in violation_rows]
+
+        # Get pending notifications (unacknowledged)
+        notif_rows = conn.execute(
+            """
+            SELECT id, tier, english, hindi, marathi, message, created_at, acknowledged_at
+            FROM notifications
+            WHERE user_id = ? AND acknowledged_at IS NULL
+            ORDER BY created_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+        pending_notifications = [dict(row) for row in notif_rows]
+
+        profile_data = {
+            "user_id": user_row["id"],
+            "points": user_row["points"],
+            "violation_count": user_row["violation_count"],
+            "xp_points": user_row["xp_points"],
+            "landfill_saved_kg": round(user_row["landfill_saved_kg"], 2),
+            "ward": user_row["ward"],
+            "society_name": user_row["society_name"],
+            "violation_history": violation_history,
+            "pending_notifications": pending_notifications,
+        }
+
+        return audit_response(
+            profile_data,
+            transaction_id=f"profile-{user_id}",
+        )
 
 
 @app.post("/reward")
@@ -398,6 +647,9 @@ def violation(req: ViolationRequest) -> dict[str, Any]:
             (req.user_id, window_start),
         ).fetchone()["cnt"]
         tier = min(prior_violations + 1, 3)
+        
+        # DEBUG: Log tier calculation
+        print(f"[VIOLATION_DEBUG] User: {req.user_id}, Prior violations: {prior_violations}, Calculated tier: {tier}, Window start: {window_start}")
 
         points_delta = 0
         message = ""
@@ -500,6 +752,61 @@ def notifications(user_id: str) -> dict[str, Any]:
         ).fetchall()
         data = [NotificationOut(**dict(row)).model_dump() for row in rows]
         return audit_response(data, transaction_id=f"notifications-{user_id}")
+
+
+@app.get("/collector/search-users")
+def collector_search_users(
+    auth_header: str = Header(None, alias="Authorization"),
+    search_query: str = "",
+) -> dict[str, Any]:
+    """
+    Collector endpoint: Search for users to flag violations.
+    Returns minimal data (NO personal info, NO points).
+    """
+    user_id, role = extract_user_from_token(auth_header)
+
+    # Ensure requester is a collector
+    if role != UserRole.COLLECTOR.value:
+        raise HTTPException(status_code=403, detail="Only collectors can search users")
+
+    with get_db() as conn:
+        # Get all users (simple search by user_id prefix)
+        if search_query:
+            users = conn.execute(
+                "SELECT id, violation_count FROM users WHERE id LIKE ? LIMIT 20",
+                (f"%{search_query}%",),
+            ).fetchall()
+        else:
+            users = conn.execute(
+                "SELECT id, violation_count FROM users LIMIT 20"
+            ).fetchall()
+
+        results = []
+        for user_row in users:
+            # Get last violation date for this user
+            last_violation = conn.execute(
+                """
+                SELECT created_at FROM ledger
+                WHERE user_id = ? AND event_type = 'violation'
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (user_row["id"],),
+            ).fetchone()
+
+            results.append({
+                "user_id": user_row["id"],
+                "violation_count": user_row["violation_count"],
+                "last_violation_date": last_violation["created_at"] if last_violation else None,
+                # INTENTIONALLY NOT SENDING: points, personal data, email
+            })
+
+        return audit_response(
+            {
+                "results": results,
+                "count": len(results),
+            },
+            transaction_id=f"search-{user_id}",
+        )
 
 
 @app.post("/notifications/{notification_id}/acknowledge")

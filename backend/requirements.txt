@@ -1,2 +1,5 @@
 fastapi
 uvicorn[standard]
+bcrypt
+pydantic-settings
+python-jose[cryptography]

@@ -138,7 +138,7 @@ export default function DashboardApp() {
     if (activeView !== "citizen") return;
     const timer = setInterval(() => {
       void pollCitizen();
-    }, 3000);
+    }, 5000);
     return () => clearInterval(timer);
   }, [activeView, selectedUserId]);
 

@@ -29,6 +29,32 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return payload.data;
 }
 
+async function callWithAuth<T>(path: string, init?: RequestInit): Promise<T> {
+  const currentUser = localStorage.getItem('current_user');
+  const sessionToken = currentUser ? JSON.parse(currentUser).session_token : null;
+
+  if (!sessionToken) {
+    throw new Error('No session token found');
+  }
+
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${sessionToken}`,
+  };
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers,
+    ...init,
+  });
+
+  if (!res.ok) {
+    throw new Error(`Request failed: ${res.status}`);
+  }
+
+  const payload = (await res.json()) as ApiEnvelope<T>;
+  return payload.data;
+}
+
 export const api = {
   getUser: (userId: string) => call<User>(`/user/${userId}`),
   getUsers: () => call<User[]>("/users"),
@@ -85,4 +111,42 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ user_id: userId, answer }),
     }),
+  getUserProfile: () =>
+    callWithAuth<{
+      user_id: string;
+      points: number;
+      violation_count: number;
+      xp_points: number;
+      landfill_saved_kg: number;
+      ward: string;
+      society_name: string;
+      violation_history: Array<{
+        id: string;
+        offense_tier: number;
+        violation_type: string;
+        points_delta: number;
+        geo_tag: string;
+        details: string;
+        created_at: string;
+      }>;
+      pending_notifications: Array<{
+        id: string;
+        tier: number;
+        english: string;
+        hindi: string;
+        marathi: string;
+        message: string;
+        created_at: string;
+        acknowledged_at: string | null;
+      }>;
+    }>('/user/profile/private'),
+  searchCollectorUsers: (searchQuery: string = '') =>
+    callWithAuth<{
+      results: Array<{
+        user_id: string;
+        violation_count: number;
+        last_violation_date: string | null;
+      }>;
+      count: number;
+    }>(`/collector/search-users?search_query=${encodeURIComponent(searchQuery)}`),
 };
