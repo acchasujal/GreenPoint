@@ -4,6 +4,7 @@ export type User = {
   violation_count: number;
   xp_points: number;
   landfill_saved_kg: number;
+  co2_saved_kg: number;
   last_quiz_date: string | null;
   ward: string;
   society_name: string;

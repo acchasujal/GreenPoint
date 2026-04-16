@@ -75,6 +75,7 @@ class UserOut(BaseModel):
     violation_count: int
     xp_points: int
     landfill_saved_kg: float
+    co2_saved_kg: float
     last_quiz_date: str | None = None
     ward: str
     society_name: str
@@ -143,6 +144,7 @@ class UserProfileResponse(BaseModel):
     violation_count: int
     xp_points: int
     landfill_saved_kg: float
+    co2_saved_kg: float
     ward: str
     society_name: str
     violation_history: list[dict[str, Any]]
@@ -242,6 +244,7 @@ def init_db() -> None:
                 violation_count INTEGER NOT NULL DEFAULT 0,
                 xp_points INTEGER NOT NULL DEFAULT 0,
                 landfill_saved_kg REAL NOT NULL DEFAULT 0,
+                co2_saved_kg REAL NOT NULL DEFAULT 0,
                 last_quiz_date TEXT,
                 ward TEXT NOT NULL DEFAULT 'Chembur',
                 society_name TEXT NOT NULL DEFAULT 'Green Heights'
@@ -303,6 +306,8 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE users ADD COLUMN landfill_saved_kg REAL NOT NULL DEFAULT 0"
             )
+        if "co2_saved_kg" not in existing_user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN co2_saved_kg REAL NOT NULL DEFAULT 0")
         if "last_quiz_date" not in existing_user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN last_quiz_date TEXT")
         if "ward" not in existing_user_columns:
@@ -320,6 +325,8 @@ def init_db() -> None:
         if "acknowledged_by" not in existing_notification_columns:
             conn.execute("ALTER TABLE notifications ADD COLUMN acknowledged_by TEXT")
 
+        repair_legacy_violation_penalties(conn)
+
 
 def default_profile_for_user(user_id: str) -> dict[str, str]:
     if user_id in DEFAULT_USER_PROFILES:
@@ -329,12 +336,52 @@ def default_profile_for_user(user_id: str) -> dict[str, str]:
     return {"ward": "Chembur", "society_name": "Green Heights"}
 
 
+def violation_points_for_tier(tier: int | None) -> int:
+    return {1: -20, 2: -50, 3: -100}.get(tier or 0, 0)
+
+
+def repair_legacy_violation_penalties(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, user_id, offense_tier, points_delta
+        FROM ledger
+        WHERE event_type = 'violation' AND points_delta = 0
+        """
+    ).fetchall()
+
+    adjustments_by_user: dict[str, int] = {}
+    for row in rows:
+        corrected_points = violation_points_for_tier(row["offense_tier"])
+        if corrected_points == row["points_delta"]:
+            continue
+
+        conn.execute(
+            "UPDATE ledger SET points_delta = ? WHERE id = ?",
+            (corrected_points, row["id"]),
+        )
+        adjustments_by_user[row["user_id"]] = (
+            adjustments_by_user.get(row["user_id"], 0) + corrected_points
+        )
+
+    for user_id, adjustment in adjustments_by_user.items():
+        user = conn.execute("SELECT points FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user:
+            continue
+
+        conn.execute(
+            "UPDATE users SET points = ? WHERE id = ?",
+            (max(user["points"] + adjustment, 0), user_id),
+        )
+        refresh_user_metrics(conn, user_id)
+
+
 def refresh_user_metrics(conn: sqlite3.Connection, user_id: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     landfill_saved_kg = round(row["points"] * 0.5, 2)
+    co2_saved_kg = round(row["points"] * 0.2, 2)
     conn.execute(
-        "UPDATE users SET landfill_saved_kg = ? WHERE id = ?",
-        (landfill_saved_kg, user_id),
+        "UPDATE users SET landfill_saved_kg = ?, co2_saved_kg = ? WHERE id = ?",
+        (landfill_saved_kg, co2_saved_kg, user_id),
     )
     return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
 
@@ -348,8 +395,8 @@ def ensure_user(conn: sqlite3.Connection, user_id: str) -> sqlite3.Row:
     conn.execute(
         """
         INSERT INTO users (
-            id, points, violation_count, xp_points, landfill_saved_kg, last_quiz_date, ward, society_name
-        ) VALUES (?, 0, 0, 0, 0, NULL, ?, ?)
+            id, points, violation_count, xp_points, landfill_saved_kg, co2_saved_kg, last_quiz_date, ward, society_name
+        ) VALUES (?, 0, 0, 0, 0, 0, NULL, ?, ?)
         """,
         (user_id, profile["ward"], profile["society_name"]),
     )
@@ -363,6 +410,7 @@ def user_to_out(row: sqlite3.Row) -> UserOut:
         violation_count=row["violation_count"],
         xp_points=row["xp_points"],
         landfill_saved_kg=round(row["landfill_saved_kg"], 2),
+        co2_saved_kg=round(row["co2_saved_kg"], 2),
         last_quiz_date=row["last_quiz_date"],
         ward=row["ward"],
         society_name=row["society_name"],
@@ -577,6 +625,7 @@ def get_user_profile_private(
             "violation_count": user_row["violation_count"],
             "xp_points": user_row["xp_points"],
             "landfill_saved_kg": round(user_row["landfill_saved_kg"], 2),
+            "co2_saved_kg": round(user_row["co2_saved_kg"], 2),
             "ward": user_row["ward"],
             "society_name": user_row["society_name"],
             "violation_history": violation_history,
@@ -659,17 +708,18 @@ def violation(req: ViolationRequest) -> dict[str, Any]:
         monetary_fine_inr = 0
 
         if tier == 1:
-            points_delta = -20
+            points_delta = violation_points_for_tier(tier)
             english = WARNING_MESSAGES["en"]
             hindi = WARNING_MESSAGES["hi"]
             marathi = WARNING_MESSAGES["mr"]
             message = "Tier 1 warning issued with 20-point deduction."
         elif tier == 2:
-            points_delta = -50
+            points_delta = violation_points_for_tier(tier)
             message = "Tier 2 offense: 50 points deducted and society notification issued."
         else:
+            points_delta = violation_points_for_tier(tier)
             monetary_fine_inr = 200
-            message = "Tier 3 offense: INR 200 BMC monetary fine issued."
+            message = "Tier 3 offense: 100 points deducted and INR 200 BMC monetary fine issued."
 
         new_points = max(user["points"] + points_delta, 0)
         new_violation_count = user["violation_count"] + 1

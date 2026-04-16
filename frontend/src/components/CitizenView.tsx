@@ -61,10 +61,15 @@ export function CitizenView({
   const canAppeal =
     !!latestViolation &&
     Date.now() - new Date(latestViolation.created_at).getTime() <= 48 * 60 * 60 * 1000;
+  const violationPenaltyByTier: Record<number, number> = {
+    1: -20,
+    2: -50,
+    3: -100,
+  };
 
   const points = user?.points ?? 0;
   const landfillSaved = user?.landfill_saved_kg ?? points * 0.5;
-  const co2Saved = points * 0.2;
+  const co2Saved = user?.co2_saved_kg ?? points * 0.2;
   const redemptionProgress = Math.min((points / 100) * 100, 100);
 
   return (
@@ -174,34 +179,47 @@ export function CitizenView({
           </div>
           <div className="space-y-3">
             {recentActivity.map((item) => (
-              <div
-                key={item.id}
-                className="rounded-2xl border border-white/70 bg-white/65 px-4 py-3 backdrop-blur-sm"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-800">
-                      {item.event_type === "reward"
-                        ? "Segregation Reward"
-                        : item.event_type === "quiz_reward"
-                          ? "Waste Wizard Reward"
-                          : "Violation Penalty"}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500">{formatDate(item.created_at)}</p>
-                  </div>
-                  <p
-                    className={`text-base font-black ${
-                      item.points_delta >= 0 ? "text-emerald-600" : "text-red-600"
-                    }`}
+              (() => {
+                const displayDelta =
+                  item.event_type === "violation"
+                    ? item.points_delta < 0
+                      ? item.points_delta
+                      : violationPenaltyByTier[item.offense_tier ?? 0] ?? -Math.abs(item.points_delta)
+                    : item.points_delta;
+                const deltaClass =
+                  item.event_type === "violation"
+                    ? "text-[#EF4444]"
+                    : displayDelta >= 0
+                      ? "text-emerald-600"
+                      : "text-red-600";
+
+                return (
+                  <div
+                    key={item.id}
+                    className="rounded-2xl border border-white/70 bg-white/65 px-4 py-3 backdrop-blur-sm"
                   >
-                    {formatDelta(item.points_delta)}
-                  </p>
-                </div>
-                <p className="mt-2 text-xs text-slate-600">
-                  Collector: {item.collector_id} | Location: {extractLocation(item.location)} |
-                  Status: Verified
-                </p>
-              </div>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800">
+                          {item.event_type === "reward"
+                            ? "Segregation Reward"
+                            : item.event_type === "quiz_reward"
+                              ? "Waste Wizard Reward"
+                              : "Violation Penalty"}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">{formatDate(item.created_at)}</p>
+                      </div>
+                      <p className={`text-base font-black ${deltaClass}`}>
+                        {formatDelta(displayDelta)} pts
+                      </p>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-600">
+                      Collector: {item.collector_id} | Location: {extractLocation(item.location)} |
+                      Status: Verified
+                    </p>
+                  </div>
+                );
+              })()
             ))}
             {recentActivity.length === 0 && (
               <p className="rounded-2xl bg-white/60 px-4 py-5 text-sm text-slate-500 backdrop-blur-sm">

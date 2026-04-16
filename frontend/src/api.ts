@@ -118,6 +118,7 @@ export const api = {
       violation_count: number;
       xp_points: number;
       landfill_saved_kg: number;
+      co2_saved_kg: number;
       ward: string;
       society_name: string;
       violation_history: Array<{

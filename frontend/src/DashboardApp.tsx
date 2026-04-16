@@ -343,7 +343,9 @@ export default function DashboardApp() {
                 society notification
               </p>
               <p className="rounded-2xl bg-white/60 px-4 py-3 backdrop-blur-sm">
-                3rd offense: <span className="font-bold text-red-600">INR 200 BMC fine</span>
+                3rd offense:{" "}
+                <span className="font-bold text-red-600">100-point deduction</span> and{" "}
+                <span className="font-bold text-red-600">INR 200 BMC fine</span>
               </p>
             </div>
           </article>
